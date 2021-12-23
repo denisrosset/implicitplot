@@ -74,6 +74,50 @@ classdef ImplicitPlot < handle
             ip = ImplicitPlot(xRange, yRange, data, xDivisions, yDivisions, zeros(4, 0));
         end
 
+        function ip = load(filename)
+        % Reads an implicit plot from a MAT file
+        %
+        % Args:
+        %   filename (charstring): Name of the MAT file to read
+        %
+        % Returns:
+        %   `.ImplicitPlot`: An implicit plot
+            s = load(filename);
+            ip = ImplicitPlot.fromStruct(s);
+        end
+
+        function ip = fromStruct(s)
+        % Creates an implicit plot from the data held in a struct
+        %
+        % This function is used for compatiblity with Octave, and to create MAT files that are interoperable with Python
+        % and possibly other implementations of this plot.
+            assert(s.version == 1);
+            assert(strcmp(s.type, 'ImplicitPlot'));
+            ip = ImplicitPlot(s.xRange, s.yRange, s.data, s.xDivisions, s.yDivisions, s.path);
+        end
+
+    end
+
+    methods % Data output methods
+
+        function save(self, filename)
+        % Saves an implicit plot to a MAT file
+        %
+        % Args:
+        %   filename (charstring): Name of the MAT file to write
+            s = self.toStruct;
+            save(filename, s);
+        end
+
+        function s = toStruct(self)
+        % Extract the data from this implicit plot into a struct
+        %
+        % Returns:
+        %   struct: Struct containing the data from which this implicit plot can be reconstructed
+            s = struct('version', {1}, 'type', {'ImplicitPlot'}, 'xRange', {self.xRange}, 'yRange', {self.yRange}, ...
+                       'data', {self.data}, 'xDivisions', {self.xDivisions}, 'yDivisions', {self.yDivisions});
+        end
+
     end
 
     methods
