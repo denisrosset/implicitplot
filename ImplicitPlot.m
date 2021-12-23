@@ -8,15 +8,15 @@ classdef ImplicitPlot < handle
 % The plot range is given by the properties `.xRange` and `.yRange`, which contain each two double values, the start and
 % the end of the interval for the respective axes.
 %
-% For the x axis, the integer coordinates are between ``1`` and ``xDivisions+1`` included, where:
+% For the x axis, the integer coordinates are between ``0`` and ``xDivisions`` included, where:
 %
-% - ``1`` maps to ``xRange(1)``
-% - ``xDivisions+1`` maps to ``xRange(2)``.
+% - ``0`` maps to ``xRange(1)``
+% - ``xDivisions`` maps to ``xRange(2)``.
 %
-% For the y axis, the integer coordinates are between ``1`` and ``yDivisions+1`` included, where:
+% For the y axis, the integer coordinates are between ``0`` and ``yDivisions`` included, where:
 %
-% - ``1`` maps to ``yRange(1)``
-% - ``yDivisions+1`` maps to ``yRange(2)``.
+% - ``0`` maps to ``yRange(1)``
+% - ``yDivisions`` maps to ``yRange(2)``.
 %
 % In the sparse matrix, we have the following possible values. Here we write the integer coordinates ``(ix,iy)``
 % corresponding to the point ``(x,y)``.
@@ -24,6 +24,8 @@ classdef ImplicitPlot < handle
 % - ``data(ix,iy) == 0`` means that ``f(x,y)`` hasn't been computed.
 % - ``data(ix,iy) == realmin`` means that ``f(x,y) == 0``.
 % - ``data(ix,iy) == c`` means that ``f(x,y) == c``.
+%
+% In MATLAB, the matrix indexing is one-based, so accesses to ``data(ix,iy)`` are shifted by one.
 %
 % Note that the value ``f(x,y) == realmin`` is encoded as if ``f(x,y) == 0``. ``realmin`` is the smallest positive
 % normalized floating point number, ``2.2251e-308``.
@@ -49,7 +51,7 @@ classdef ImplicitPlot < handle
         data % (sparse double matrix): Evaluated function values
         xDivisions % (integer): Power of two describing the number of divisions across the x axis
         yDivisions % (integer): Power of two describing the number of divisions across the y axis
-        path % (integer(4,n)): Path being plotted
+        path % (integer(4,N)): Path being plotted
     end
 
     methods (Static)
@@ -98,14 +100,14 @@ classdef ImplicitPlot < handle
         %
         % Returns:
         %   double: Function value at the given grid point
-            c = full(self.data(ix, iy));
-            if self.data(ix, iy) == 0
+            c = full(self.data(ix+1, iy+1));
+            if c == 0
                 [x, y] = self.realCoordinates(ix, iy);
                 c = f(x, y);
                 if c == 0
                     c = realmin;
                 end
-                self.data(ix, iy) = c;
+                self.data(ix+1, iy+1) = c;
             end
             if c == realmin
                 c = 0;
@@ -116,44 +118,44 @@ classdef ImplicitPlot < handle
         % Converts real coordinates to integer coordinates
         %
         % Args:
-        %   x (double): X coordinate with ``xRange(1) <= x <= xRange(2)``
-        %   y (double): Y coordinate with ``yRange(1) <= y <= yRange(2)``
+        %   x (double(1,n)): X coordinate with ``xRange(1) <= x(i) <= xRange(2)`` for all ``i``
+        %   y (double(1,n)): Y coordinate with ``yRange(1) <= y(i) <= yRange(2)`` for all ``i``
         %
         % Returns
         % -------
-        %   ix: integer
-        %     X integer coordinate
-        %   iy: integer
-        %     Y integer coordinate
+        %   ix(1,n): integer
+        %     X integer coordinates
+        %   iy(1,n): integer
+        %     Y integer coordinates
             xRange = self.xRange;
             yRange = self.yRange;
-            ix = (x - xRange(1))/(xRange(2) - xRange(1))*self.xDivisions + 1;
-            iy = (y - yRange(1))/(yRange(2) - yRange(1))*self.yDivisions + 1;
-            ix(x == xRange(1)) = 1;
-            ix(x == xRange(2)) = self.xDivisions + 1;
-            iy(y == yRange(1)) = 1;
-            iy(y == yRange(2)) = self.yDivisions + 1;
+            ix = (x - xRange(1))/(xRange(2) - xRange(1))*self.xDivisions;
+            iy = (y - yRange(1))/(yRange(2) - yRange(1))*self.yDivisions;
+            ix(x == xRange(1)) = 0;
+            ix(x == xRange(2)) = self.xDivisions;
+            iy(y == yRange(1)) = 0;
+            iy(y == yRange(2)) = self.yDivisions;
         end
 
         function [x, y] = realCoordinates(self, ix, iy)
         % Converts integer coordinates to real coordinates
         %
         % Args:
-        %   x (double): X coordinate with ``1 <= x <= self.xDivisions+1``
-        %   y (double): Y coordinate with ``1 <= y <= self.yDivisions+1``
+        %   x (double(1,n)): X coordinate with ``0 <= x(i) <= self.xDivisions`` for all ``i``
+        %   y (double(1,n)): Y coordinate with ``0 <= y(i) <= self.yDivisions`` for all ``i``
         %
         % Returns
         % -------
-        %   x: double
+        %   x(1,n): double
         %     X real coordinate
-        %   y: double
+        %   y(1,n): double
         %     Y real coordinate
             xRange = self.xRange;
             yRange = self.yRange;
-            x = xRange(1) + (xRange(2) - xRange(1)) * ((ix-1)/self.xDivisions);
-            y = yRange(1) + (yRange(2) - yRange(1)) * ((iy-1)/self.yDivisions);
-            x(ix == self.xDivisions + 1) = xRange(2); % to avoid numerical errors
-            y(iy == self.yDivisions + 1) = yRange(2); % to avoid numerical errors
+            x = xRange(1) + (xRange(2) - xRange(1)) * ix/self.xDivisions;
+            y = yRange(1) + (yRange(2) - yRange(1)) * iy/self.yDivisions;
+            x(ix == self.xDivisions) = xRange(2); % to avoid numerical errors
+            y(iy == self.yDivisions) = yRange(2); % to avoid numerical errors
         end
 
         function initializePath(self, f, insideX, insideY, initialStepSize)
@@ -173,16 +175,16 @@ classdef ImplicitPlot < handle
             delta = 2^floor(log2(min(deltax, deltay)));
             % find coordinates of inside point
             [ix, iy] = self.integerCoordinates(insideX, insideY);
-            ix = floor((ix-1)/delta)*delta+1;
-            iy = floor((iy-1)/delta)*delta+1;
+            ix = floor((ix-1)/delta)*delta;
+            iy = floor((iy-1)/delta)*delta;
             ic = self.eval(f, ix, iy);
             % outside point
-            oy = 1;
+            oy = 0;
             oc = self.eval(f, ix, oy);
             assert((oc >= 0) ~= (ic >= 0));
             while iy - oy > delta
                 my = (oy + iy)/2;
-                my = round((my-1)/delta)*delta+1;
+                my = round(my/delta)*delta;
                 mc = self.eval(f, ix, my);
                 if (mc >= 0) == (oc >= 0)
                     % the middle point is outside
@@ -309,9 +311,9 @@ classdef ImplicitPlot < handle
         %
         % Returns
         % -------
-        %   x: double(1, n)
+        %   x: double(1, N)
         %    X coordinates of the path to plot
-        %   y: double(1, n)
+        %   y: double(1, N)
         %    Y coordinates of the path to plot
             n = size(self.path, 2);
             x = zeros(1, n);
