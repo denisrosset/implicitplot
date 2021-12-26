@@ -1,22 +1,29 @@
 classdef Implicit < handle
-% Describes the 2D plot of an implicit equation f(x,y) == 0
+% Describes the implicit plot of isolines of a function (``f(x,y) == cte``)
 %
-% This class is optimized for implicit plots where the function evaluation is expensive. The computed function values
-% are cached in a sparse matrix, and we maintain a linear correspondance between the plot range and the integer
-% coordinates indexing the sparse matrix.
+% This class caches computed function values, and maintains a list of computed isolines.
 %
-% The plot range is given by the properties `.xRange` and `.yRange`, which contain each two double values, the start and
-% the end of the interval for the respective axes.
+% **Plot range and discretization**
 %
-% For the x axis, the integer coordinates are between ``0`` and ``xDivisions`` included, where:
+% The computed function values are cached in a sparse matrix, and we maintain a linear correspondance between the
+% plot range and the integer coordinates indexing the sparse matrix.
+%
+% The plot range is given by the properties `.xRange` and `.yRange`, which are row vectors of two double values,
+% the start and the end of the interval for each of the axes.
+%
+% Internally, we discretize these ``x`` and ``y`` ranges linearly.
+%
+% For the x axis, the integer coordinates are between ``0`` and `.xDivisions` included, where:
 %
 % - ``0`` maps to ``xRange(1)``
 % - ``xDivisions`` maps to ``xRange(2)``.
 %
-% For the y axis, the integer coordinates are between ``0`` and ``yDivisions`` included, where:
+% For the y axis, the integer coordinates are between ``0`` and `.yDivisions` included, where:
 %
 % - ``0`` maps to ``yRange(1)``
 % - ``yDivisions`` maps to ``yRange(2)``.
+%
+% **Sparse matrix data storage**
 %
 % In the sparse matrix, we have the following possible values. Here we write the integer coordinates ``(ix,iy)``
 % corresponding to the point ``(x,y)``.
@@ -30,28 +37,50 @@ classdef Implicit < handle
 % Note that the value ``f(x,y) == realmin`` is encoded as if ``f(x,y) == 0``. ``realmin`` is the smallest positive
 % normalized floating point number, ``2.2251e-308``.
 %
-% The path we plot is described by linearly interpolated points (lips).
-
-% A lip is described by a pair of points where the function takes different signs.
+% **Isolines**
+%
+% We maintain a list of computed isolines.
+%
+% Each isoline is described by an altitude ``v`` and a series of 2D coordinates ``(x,y)`` that approximately satisfy
+% ``f(x,y) == v``.
+%
+% Each isoline is in one of the following states:
+%
+% * closed: if the first and last points of the isoline are identical
+% * open: if the first and last points of the isoline are on the plot boundary but not identical
+% * wip: if the first and last points are not identical and at least one is not on the plot boundary
+%
+% Each isoline corresponds to an integer matrix with ``N`` rows and four columns, where ``N`` is the number of points.
+% Each row in this matrix stores four integers which together describe a linearly interpolated point.
+%
+% **Lips: linearly interpolated points**
+%
+% The points describing an isoline are linearly interpolated points (lips).
+%
+% Each lip is described by a pair of coordinates where the function ``f`` takes different signs. By "sign" we mean
+% whether ``f(x,y) >= v`` or ``f(x,y) < v``.
+%
 % Say the two points have coordinates ``(x1, y1)`` and ``(x2, y2)``, and ``sign(f(x1,y1)) ~= sign(f(x2,y2))``.
+%
 % The lip is given by ``(x, y) == (1-t)*(x1, y1) + t*(x2, y2)`` where ``0 <= t <= 1`` solves the equation
 % ``(1-t)*f(x1,y1) + t*f(x2,y2) == 0``.
 %
-% We ask that ``f(x1, y1)`` has the same sign as ``f(xRange(1), yRange(1))``, i.e. is "outside".
+% The coordinates ``(x1, y1)`` and ``(x2, y2)`` are not given in floating-point format, rather as integer coordinates
+% ``(ix1, iy1)`` and ``(ix2, iy2)``.
 %
-% Usually, a lip is situated on the side of a marching square. Of course, the coordinates ``(x1, y1)`` and ``(x2, y2)``
-% are not given in floating-point format, rather as integer coordinates ``(ix1, iy1)`` and ``(ix2, iy2)``.
-%
-% The path we plot is thus described by the property `.plot`, where each column stores the ``(ix1, iy1, ix2, iy2)`` of
-% a lip.
+% Each lip is thus described by four integers ``(ix1, iy1, ix2, iy2)``.
 
-    properties (SetAccess = protected)
+    properties (SetAccess = protected) % Plot and cached evaluations
         xRange % (double(1,2)): Range of x values
         yRange % (double(1,2)): Range of y values
-        data % (sparse double matrix): Evaluated function values
         xDivisions % (integer): Power of two describing the number of divisions across the x axis
         yDivisions % (integer): Power of two describing the number of divisions across the y axis
-        path % (integer(4,N)): Path being plotted
+        data % (sparse double matrix): Evaluated function values
+    end
+
+    properties (SetAccess = protected)
+        altitudes % (double(1,I)): Altitudes of the isolines
+        paths % (cell(1,I) integer(Ni,4)): Path of the isolines
     end
 
     methods (Static)
@@ -69,7 +98,7 @@ classdef Implicit < handle
             args = struct('xDivisions', 2^16, 'yDivisions', 2^16);
             args = oracleplot.populateStruct(args, varargin);
             data = sparse(args.xDivisions+1, args.yDivisions+1);
-            ip = oracleplot.Implicit(xRange, yRange, data, args.xDivisions, args.yDivisions, zeros(4, 0));
+            ip = oracleplot.Implicit(xRange, yRange, data, args.xDivisions, args.yDivisions, zeros(1, 0), cell(1, 0));
         end
 
         function ip = load(filename)
@@ -97,7 +126,7 @@ classdef Implicit < handle
         %   `.Implicit`: An implicit plot
             assert(s.version == 1);
             assert(strcmp(s.type, 'oracleplot.Implicit'));
-            ip = oracleplot.Implicit(s.xRange, s.yRange, s.data, s.xDivisions, s.yDivisions, s.path);
+            ip = oracleplot.Implicit(s.xRange, s.yRange, s.data, s.xDivisions, s.yDivisions, s.altitudes, s.paths);
         end
 
     end
@@ -120,14 +149,15 @@ classdef Implicit < handle
         %   struct: Struct containing the data from which this implicit plot can be reconstructed
             s = struct('version', {1}, 'type', {'oracleplot.Implicit'}, ...
                        'xRange', {self.xRange}, 'yRange', {self.yRange}, ...
-                       'data', {self.data}, 'xDivisions', {self.xDivisions}, 'yDivisions', {self.yDivisions});
+                       'data', {self.data}, 'xDivisions', {self.xDivisions}, 'yDivisions', {self.yDivisions}, ...
+                       'altitudes', {self.altitudes}, 'paths', {self.paths});
         end
 
     end
 
     methods % Constructor
 
-        function self = Implicit(xRange, yRange, data, xDivisions, yDivisions, path)
+        function self = Implicit(xRange, yRange, data, xDivisions, yDivisions, altitudes, paths)
         % Constructs an implicit plot object
         %
         % For the description of arguments, see the description of class properties
@@ -136,7 +166,8 @@ classdef Implicit < handle
             self.data = data;
             self.xDivisions = xDivisions;
             self.yDivisions = yDivisions;
-            self.path = path;
+            self.paths = paths;
+            self.paths = paths;
         end
 
     end
@@ -167,7 +198,7 @@ classdef Implicit < handle
             end
         end
 
-        function [ix, iy] = integerCoordinates(self, x, y)
+        function [ix, iy] = unroundedIntegerCoordinates(self, x, y)
         % Converts real coordinates to integer coordinates
         %
         % Args:
@@ -176,10 +207,10 @@ classdef Implicit < handle
         %
         % Returns
         % -------
-        %   ix(1,n): integer
-        %     X integer coordinates
-        %   iy(1,n): integer
-        %     Y integer coordinates
+        %   ix: double(1,n)
+        %     X integer coordinates (not rounded!)
+        %   iy: double(1,n)
+        %     Y integer coordinates (not rounded!)
             xRange = self.xRange;
             yRange = self.yRange;
             ix = (x - xRange(1))/(xRange(2) - xRange(1))*self.xDivisions;
@@ -190,18 +221,36 @@ classdef Implicit < handle
             iy(y == yRange(2)) = self.yDivisions;
         end
 
+        function [ix, iy] = integerCoordinates(self, x, y)
+        % Converts real coordinates to integer coordinates
+        %
+        % Args:
+        %   x (double(1,n)): X coordinate with ``xRange(1) <= x(i) <= xRange(2)`` for all ``i``
+        %   y (double(1,n)): Y coordinate with ``yRange(1) <= y(i) <= yRange(2)`` for all ``i``
+        %
+        % Returns
+        % -------
+        %   ix: double(1,n)
+        %     X integer coordinates (rounded!)
+        %   iy: double(1,n)
+        %     Y integer coordinates (rounded!)
+            [ix, iy] = self.unroundedIntegerCoordinates(x, y);
+            ix = round(ix);
+            iy = round(iy);
+        end
+
         function [x, y] = realCoordinates(self, ix, iy)
         % Converts integer coordinates to real coordinates
         %
         % Args:
-        %   x (double(1,n)): X coordinate with ``0 <= x(i) <= self.xDivisions`` for all ``i``
-        %   y (double(1,n)): Y coordinate with ``0 <= y(i) <= self.yDivisions`` for all ``i``
+        %   ix (integer(1,n)): X coordinate with ``0 <= x(i) <= self.xDivisions`` for all ``i``
+        %   iy (integer(1,n)): Y coordinate with ``0 <= y(i) <= self.yDivisions`` for all ``i``
         %
         % Returns
         % -------
-        %   x(1,n): double
+        %   x: double(1,n)
         %     X real coordinate
-        %   y(1,n): double
+        %   y: double(1,n)
         %     Y real coordinate
             xRange = self.xRange;
             yRange = self.yRange;
@@ -211,218 +260,146 @@ classdef Implicit < handle
             y(iy == self.yDivisions) = yRange(2); % to avoid numerical errors
         end
 
+        function l = validIntegerCoordinates(self, ix, iy)
+        % Returns whether the given integer coordinates are valid
+        %
+        % Args:
+        %   ix (integer(1,n)): X integer coordinates
+        %   iy (integer(1,n)): Y integer coordinates
+        %
+        % Returns:
+        %   logical(1,n): Whether each of the given coordinates is valid
+            vx = (ix == round(ix)) & (ix >= 0) & (ix <= self.xDivisions);
+            vy = (iy == round(iy)) & (iy >= 0) & (iy <= self.yDivisions);
+        end
+
+        function l = integerCoordinatesOnBoundary(self, ix, iy)
+        % Returns whether the given integer coordinates are on the boundary
+        %
+        % Args:
+        %   ix (integer(1,n)): X coordinate with ``0 <= x(i) <= self.xDivisions`` for all ``i``
+        %   iy (integer(1,n)): Y coordinate with ``0 <= y(i) <= self.yDivisions`` for all ``i``
+        %
+        % Returns:
+        %   logical(1,n): Whether each of the given coordinates is on the boundary
+            onx = (ix == 0) | (ix == self.xDivisions);
+            ony = (iy == 0) | (iy == self.yDivisions);
+            l = onx & ony;
+        end
+
     end
 
-    methods % Path handling
+    methods % Linearly interpolated points manipulation
 
-        function initializePath(self, f, insideX, insideY, initialStepSize)
-        % Initializes the plot by finding a pair of lips
-        %
-        % One needs to provide a point ``(insideX, insideY)`` so that ``f(insideX, insideY)`` has a different sign than
-        % the value of ``f`` at the boundary of the plot.
-        %
-        % This method will overwrite the `.path` property with the start of a path.
+        function [x, y] = computeLipCoordinates(self, f, altitude, lip)
+        % Computes the real coordinates corresponding to a linearly interpolated point
         %
         % Args:
         %   f (function_handle): 2D function to plot
-        %   insideX (double): X coordinate of a point "inside" (real)
-        %   insideY (double): Y coordinate of a point "inside" (real)
-            deltax = initialStepSize/abs(self.xRange(2) - self.xRange(1))*self.xDivisions;
-            deltay = initialStepSize/abs(self.yRange(2) - self.yRange(1))*self.yDivisions;
-            delta = 2^floor(log2(min(deltax, deltay)));
-            % find coordinates of inside point
-            [ix, iy] = self.integerCoordinates(insideX, insideY);
-            ix = floor((ix-1)/delta)*delta;
-            iy = floor((iy-1)/delta)*delta;
-            ic = self.eval(f, ix, iy);
-            % outside point
-            oy = 0;
-            oc = self.eval(f, ix, oy);
-            assert((oc >= 0) ~= (ic >= 0));
-            while iy - oy > delta
-                my = (oy + iy)/2;
-                my = round(my/delta)*delta;
-                mc = self.eval(f, ix, my);
-                if (mc >= 0) == (oc >= 0)
-                    % the middle point is outside
-                    oy = my;
-                    oc = mc;
-                else
-                    iy = my;
-                    ic = mc;
-                end
-            end
-            assert(iy-oy == delta);
-            self.path = [ix;oy;ix;iy];
-            self.step(f, delta, 0);
+        %   altitude (double): Altitude of the new isoline
+        %   lip (integer(1,4)): Integer coordinates describing a linearly interpolated point
+        %
+        % Returns
+        % -------
+        %   x: double
+        %     Interpolated X coordinate
+        %   y: double
+        %     Interpolated Y coordinate
+            ix1 = lip(1);
+            iy1 = lip(2);
+            ix2 = lip(3);
+            iy2 = lip(4);
+            v1 = self.eval(f, ix1, iy1);
+            v2 = self.eval(f, ix2, iy2);
+            assert((v1 >= altitude) ~= (v2 >= altitude), 'Points of a lip must differ in position w.r.t. altitude');
+            % We solve the equation
+            % (1-t)*v1 + t*v2 = a
+            % t*(v2-v1) + v1 = a
+            % t*(v2-v1) = a-v1
+            % t=(a-v1)/(v2-v1)
+            t = (altitude-v1)/(v2-v1);
+            [x1, y1] = self.realCoordinates(ix1, iy1);
+            [x2, y2] = self.realCoordinates(ix2, iy2);
+            x = (1-t)*x1 + t*x2;
+            y = (1-t)*y1 + t*y2;
         end
 
-        function splitLastLip(self, f)
-        % Splits the last lip in half
-        %
-        % This method is used to resolve ambiguous situations such as when the four corners have the signs::
-        %   +-  -+
-        %   -+  +-
-        %
-        % This method modifies the last lip in place.
+        function [isValid, reason] = isValidLip(self, f, altitude, lip)
+        % Returns whether the given lip is valid
         %
         % Args:
-        %   f (function_handle): Function ``f(x,y)`` to plot
-            ox = self.path(1, end);
-            oy = self.path(2, end);
-            ix = self.path(3, end);
-            iy = self.path(4, end);
-            ic = self.eval(f, ix, iy) >= 0;
-            oc = self.eval(f, ox, oy) >= 0;
-            if ix == ox % if it is vertical lip
-                delta = oy - iy; % recover the step delta
-                assert(abs(delta) > 1, 'Error: grid too small, increase yDivisions and recompute.');
-                y = iy + delta/2;
-                c = self.eval(f, ix, y) >= 0;
-                if c == ic
-                    % the new point is inside
-                    iy = y;
+        %   f (function_handle): 2D function to plot
+        %   altitude (double): Altitude of the new isoline
+        %   lip (integer(1,4)): Integer coordinates describing a linearly interpolated point
+        %
+        % Returns
+        % -------
+        %   isValid: logical
+        %     True if the lip is valid
+        %   reason: charstring
+        %     If the lip is valid, empty. If invalid, provides the reason.
+            ix1 = lip(1);
+            iy1 = lip(2);
+            ix2 = lip(3);
+            iy2 = lip(4);
+            if any(~self.validIntegerCoordinates([ix1 ix2], [iy1 iy2]))
+                isValid = false;
+                reason = 'Point outside the plot range';
+                return
+            end
+            c1 = self.eval(f, ix1, iy1) >= altitude;
+            c2 = self.eval(f, ix2, iy2) >= altitude;
+            if c1 == c2
+                isValid = false;
+                if c1
+                    reason = 'Both points are above the isoline altitude';
                 else
-                    % the new point is outside
-                    oy = y;
+                    reason = 'Both points are below the isoline altitude';
                 end
-            else
-                assert(iy == oy); % horizontal lip
-                delta = ox - ix; % recover the step delta
-                assert(abs(delta) > 1, 'Error: grid too small, increase yDivisions and recompute.');
-                x = ix + delta/2;
-                c = self.eval(f, x, iy) >= 0;
-                if c == ic
-                    % the new point is inside
-                    ix = x;
-                else
-                    % the new point is outside
-                    ox = x;
-                end
+                return
             end
-            self.path(:, end) = [ox;oy;ix;iy];
-        end
-
-        function step(self, f, dx, dy)
-        % Performs a step of the boundary discovery
-        %
-        % When calling this function, a marching square is described implicitly by the last lip, which provides a
-        % side of the square. The ``(dx, dy)`` argument is added to the two points of the lip, and describes the other
-        % two corners of the square.
-        %
-        % Adds a lip to `.path`
-        %
-        % Args:
-        %   f (function_handle): Function ``f(x,y)`` to plot
-        %   dx (integer): X delta to add to the last lip (integer)
-        %   dy (integer): Y delta to add to the last lip (integer)
-            ox = self.path(1, end); % we extract the last lip
-            oy = self.path(2, end);
-            ix = self.path(3, end);
-            iy = self.path(4, end);
-            % we find the other corners of the marching square, the sides of the squares are the segments:
-            % i-o (already in the path), o-a, i-b, a-b
-            ax = ox + dx;
-            ay = oy + dy;
-            bx = ix + dx;
-            by = iy + dy;
-            % we compute/retrieve the signs of the four corners
-            o = self.eval(f, ox, oy) >= 0;
-            i = self.eval(f, ix, iy) >= 0;
-            a = self.eval(f, ax, ay) >= 0;
-            b = self.eval(f, bx, by) >= 0;
-            % now we try all possible lips where the function has different signs
-            n = 0;
-            if o ~= a
-                n = n + 1;
-                ox1 = ox;
-                oy1 = oy;
-                ix1 = ax;
-                iy1 = ay;
-            end
-            if i ~= b
-                n = n + 1;
-                ox1 = bx;
-                oy1 = by;
-                ix1 = ix;
-                iy1 = iy;
-            end
-            if a ~= b
-                n = n + 1;
-                if a == o
-                    ox1 = ax;
-                    oy1 = ay;
-                    ix1 = bx;
-                    iy1 = by;
-                else
-                    ox1 = bx;
-                    oy1 = by;
-                    ix1 = ax;
-                    iy1 = ay;
-                end
-            end
-            if n > 1 % several solutions
-                warning('Ambiguous square, halving step size');
-                self.splitLastLip(f);
-                self.step(f, dx/2, dy/2);
-            else % everything went well, add point
-                self.path(:,end+1) = [ox1;oy1;ix1;iy1];
-            end
-        end
-
-        function closePath(self, f)
-        % Runs the marching squares algorithm
-        %
-        % This method assumes that `.initializePath` has already been called.
-        %
-        % It will find a path around the boundary to plot by applying the marching squares algorithm.
-        %
-        % Args:
-        %   f (function_handle): Function ``f(x,y)`` to plot
-            while any(self.path(:,1) ~= self.path(:,end))
-                % perform one step
-                ox = self.path(1, end);
-                oy = self.path(2, end);
-                ix = self.path(3, end);
-                iy = self.path(4, end);
-                if ix == ox % if it is vertical lip
-                    delta = abs(oy - iy); % recover the step delta
-                    prev1 = self.path(1, end-1);
-                    prev2 = self.path(3, end-1);
-                    % now we identify whether we came to the present lip from the left or the right
-                    if prev1 < ix || prev2 < ix
-                        % we came from the left, move to the right
-                        self.step(f, delta, 0);
-                    else
-                        % we came from the right, move to the left
-                        self.step(f, -delta, 0);
-                    end
-                else
-                    assert(iy == oy); % horizontal lip
-                    delta = abs(ox - ix); % recover the step delta
-                    prev1 = self.path(2, end-1);
-                    prev2 = self.path(4, end-1);
-                    % now we identify whether we came to the present lip from above or below
-                    if prev1 < iy || prev2 < iy
-                        % we came from above, move below
-                        self.step(f, 0, delta);
-                    else
-                        % we came from below, move above
-                        self.step(f, 0, -delta);
-                    end
-                end
-            end
+            isValid = true;
+            reason = '';
         end
 
     end
 
-    methods % Plot retrieval
+    methods % Isoline manipulation
 
-        function [x, y] = computePath(self, f)
-        % Retrieves the path to plot in real coordinates by performing linear interpolation
+        function status = isolineStatus(self, f, j)
+        % Returns the status of the given isoline
         %
         % Args:
-        %   f (function_handle): Function to plot (normally, when this function is called, all req. values are cached)
+        %   f (function_handle): 2D function to plot
+        %   j (integer): Index of the isoline
+        %
+        % Returns:
+        %   {'wip', 'open', 'closed'}: Isoline status
+            if size(self.paths{j}, 1) == 1
+                status = 'wip';
+                return
+            end
+            first = self.paths{j}(1,:);
+            last = self.paths{j}(end,:);
+            if all(first == last)
+                status = 'closed';
+            else
+                if all(self.integerCoordinatesOnBoundary([first last]))
+                    status = 'open';
+                else
+                    status = 'wip';
+                end
+            end
+        end
+
+        function [x, y] = isolinePath(self, f, j)
+        % Returns the real coordinates corresponding to the path of an isoline
+        %
+        % The returned data can be passed directly to MATLAB's ``plot`` function.
+        %
+        % Args:
+        %   f (function_handle): 2D function to plot
+        %   j (integer): Index of the isoline
         %
         % Returns
         % -------
@@ -430,36 +407,17 @@ classdef Implicit < handle
         %    X coordinates of the path to plot
         %   y: double(1, N)
         %    Y coordinates of the path to plot
-            n = size(self.path, 2);
+            path = self.paths{j};
+            altitude = self.altitudes(j);
+            n = size(path, 1);
             x = zeros(1, n);
             y = zeros(1, n);
             for i = 1:n
-                ix1 = self.path(1, i);
-                iy1 = self.path(2, i);
-                ix2 = self.path(3, i);
-                iy2 = self.path(4, i);
-                c1 = self.eval(f, ix1, iy1);
-                c2 = self.eval(f, ix2, iy2);
-                assert(sign(c1) ~= sign(c2));
-                % (1-t)*c1 + t*c2 = 0
-                % t = -c1/(c2-c1)
-                t = -c1/(c2-c1);
-                [x1, y1] = self.realCoordinates(ix1, iy1);
-                [x2, y2] = self.realCoordinates(ix2, iy2);
-                x(i) = (1-t)*x1 + t*x2;
-                y(i) = (1-t)*y1 + t*y2;
+                lip = path(i, :);
+                [xi, yi] = self.computeLipCoordinates(self, f, altitude, lip);
+                x(i) = xi;
+                y(i) = yi;
             end
-        end
-
-        function plotCachedPoints(self)
-        % For debugging purposes, plots the points already computed and cached
-        %
-        % We plot the negative points in blue, and the nonnegative points in red
-            [ix, iy, c] = find(self.data);
-            [x, y] = self.realCoordinates(ix, iy);
-            mask = c >= 0;
-            plot(x(mask), y(mask), 'bx');
-            plot(x(~mask), y(~mask), 'rx');
         end
 
     end
