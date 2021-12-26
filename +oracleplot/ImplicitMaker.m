@@ -33,6 +33,7 @@ classdef ImplicitMaker < handle
             self.figure = args.figure;
             if ~isempty(self.figure)
                 figure(self.figure);
+                axis([self.data.xRange self.data.yRange]);
                 hold on;
             end
             self.plotEvaluations = args.plotEvaluations;
@@ -49,33 +50,91 @@ classdef ImplicitMaker < handle
             if ~isempty(self.figure) && self.plotEvaluations
                 figure(self.figure);
                 plot(x, y, 'gx');
+                drawnow;
             end
         end
+
     end
+
 
     methods % Isoline creation
 
-% $$$         function indices = isolinesUsingGrid(self, altitude, cellSize)
-% $$$         % Finds isolines at a given altitude using a discretization scheme
-% $$$         %
-% $$$         % Args:
-% $$$         %   altitude (double): Altitude at which to compute the isolines
-% $$$         %   cellSize (double): Size of the grid cells; should be roughly half the size of the smallest component to find
-% $$$         %
-% $$$         % Returns:
-% $$$         %   integer(1,\*): Indices of the created isolines
-% $$$             f = self.evaluationFunction;
-% $$$             delta = self.powerOfTwoDelta(cellSize);
-% $$$             dX = self.data.xDivisions/delta;
-% $$$             dY = self.data.yDivisions/delta;
-% $$$             values = zeros(dX+1,dY+1);
-% $$$             for i = 0:dX
-% $$$                 for j = 0:dY
-% $$$                     values(i+1,j+1) = f(i*delta, j*delta);
-% $$$                 end
-% $$$             end
-% $$$
-% $$$         end
+        function indices = isolinesUsingGrid(self, altitude, cellSize)
+        % Finds isolines at a given altitude using a discretization scheme
+        %
+        % Args:
+        %   altitude (double): Altitude at which to compute the isolines
+        %   cellSize (double): Size of the grid cells; should be roughly half the size of the smallest component to find
+        %
+        % Returns:
+        %   integer(1,\*): Indices of the created isolines
+            f = self.evaluationFunction;
+            delta = self.powerOfTwoDelta(cellSize);
+            dX = self.data.xDivisions/delta;
+            dY = self.data.yDivisions/delta;
+            below = zeros(dX+1,dY+1);
+            for i = 0:dX
+                for j = 0:dY
+                    below(i+1,j+1) = -(self.data.eval(f, i*delta, j*delta) < altitude);
+                end
+            end
+            % code: -1 if below, 0 if above but unrecognized, {1,2,3} if recognized component
+            comp = 1;
+            indices = [];
+            while 1
+                [x, y] = find(~below, 1);
+                if isempty(x)
+                    return
+                end
+                x = x - 1;
+                y = y - 1;
+                plotDone = false;
+                toCheck = [x; y];
+                i = 1;
+                while i >= 1
+                    pt = toCheck(:, i);
+                    i = i - 1;
+                    x = pt(1);
+                    y = pt(2);
+                    below(x+1, y+1) = comp;
+                    candidates = [x-1 x+1 x   x
+                                  y   y   y-1 y+1];
+                    for j = 1:4
+                        x1 = candidates(1, j);
+                        y1 = candidates(2, j);
+                        if x1 >= 0 && x1 <= dX && y1 >= 0 && y1 <= dY
+                            if below(x1+1, y1+1) == 0
+                                i = i + 1;
+                                toCheck(:, i) = [x1; y1];
+                            elseif below(x1+1, y1+1) == -1 && ~plotDone
+                                lip = [x y x1 y1]*delta;
+                                indices(1,end+1) = self.isolineFromLip(altitude, lip);
+                                plotDone = true;
+                            end
+                        end
+                    end
+                end
+                comp = comp + 1;
+            end
+        end
+
+        function j = isolineFromLip(self, altitude, lip)
+            j = self.newIsoline(altitude, lip);
+            [dx, dy] = self.isolineDirection([], lip);
+            self.walkIsoline(j, dx, dy);
+            if strcmp(self.data.isolineStatus(j), 'wip')
+                self.data.paths{j} = fliplr(self.data.paths{j});
+                if size(self.data.paths{j}, 2) == 1
+                    self.walkIsoline(j, -dx, -dy);
+                else
+                    previousLip = self.data.paths{j}(:,end-1).';
+                    currentLip = self.data.paths{j}(:,end).';
+                    [dx, dy] = self.isolineDirection(previousLip, currentLip);
+                    self.walkIsoline(j, dx, dy);
+                end
+            end
+            assert(~strcmp(self.data.isolineStatus(j), 'wip'));
+        end
 
         function j = isoline(self, altitude, varargin)
         % Creates an isoline at the given altitude
@@ -94,7 +153,7 @@ classdef ImplicitMaker < handle
                 deltay = args.featureSize/abs(self.data.yRange(2) - self.data.yRange(1))*self.data.yDivisions;
                 delta = 2^floor(log2(min(deltax, deltay)));
             else
-                delta = max(min(self.data.xDivisions, self.data.yDivisions)/128, 1);
+                delta = max(min(self.data.xDivisions, self.data.yDivisions)/64, 1);
             end
             if ~isempty(args.below)
                 below = args.below;
@@ -110,7 +169,144 @@ classdef ImplicitMaker < handle
             else
                 above = [];
             end
-            [lip, delta] = self.lipFromBisection(altitude, below, above, delta);
+            lip = self.lipFromBisection(altitude, below, above, delta);
+            j = self.isolineFromLip(altitude, lip);
+        end
+
+        function [dx, dy] = isolineDirection(self, previousLip, currentLip)
+            x1 = currentLip(1);
+            y1 = currentLip(2);
+            x2 = currentLip(3);
+            y2 = currentLip(4);
+            if x1 == x2 % vertical lip
+                delta = abs(y1 - y2);
+                if isempty(previousLip)
+                    if x1 == 0
+                        dx = delta;
+                    else
+                        dx = -delta;
+                    end
+                else
+                    if any(previousLip([1 3]) < x1) % we came from the left, move to the right
+                        dx = delta;
+                    else % we came from the right, move to the left
+                        dx = -delta;
+                    end
+                end
+                dy = 0;
+            else
+                delta = abs(x1 - x2);
+                dx = 0;
+                if isempty(previousLip)
+                    if y1 == 0
+                        dy = delta;
+                    else
+                        dy = -delta;
+                    end
+                else
+                    if any(previousLip([2 4]) < y1) % we came from above, move below
+                        dy = delta;
+                    else % we came from below, move above
+                        dy = -delta;
+                    end
+                end
+            end
+        end
+
+        function reachedBorder = walkIsoline(self, j, dx, dy)
+        % Adds lips to the end of an isoline until it reaches the border or loops back on itself
+        %
+        % Args:
+        %   j (integer): Isoline index
+        %   dx (integer): X delta to push the last lip on the isoline, must not push it on border
+        %   dy (integer): Y delta to push the last lip on the isoline
+        %
+        % Returns:
+        %   logical: Whether the isoline reached the figure border
+            startLip = self.data.paths{j}(:,1).';
+            previousLip = self.data.paths{j}(:,end).';
+            currentLip = self.stepIsoline(j, dx, dy);
+            if isempty(currentLip)
+                reachedBorder = true;
+                return
+            end
+            while any(startLip ~= currentLip) && any(startLip ~= currentLip([3 4 1 2]))
+                [dx, dy] = self.isolineDirection(previousLip, currentLip);
+                previousLip = currentLip;
+                currentLip = self.stepIsoline(j, dx, dy);
+                if isempty(currentLip)
+                    reachedBorder = true;
+                    return
+                end
+            end
+            self.data.paths{j}(:,end+1) = startLip;
+            reachedBorder = false;
+        end
+
+        function newLip = stepIsoline(self, j, dx, dy)
+        % Performs a step to push the end of an isoline
+        %
+        % When calling this function, a marching square is described implicitly by the last lip, which provides a
+        % side of the square. The ``(dx, dy)`` argument is added to the two points of the lip, and describes the other
+        % two corners of the square.
+        %
+        % Args:
+        %   j (integer): Isoline index
+        %   dx (integer): X delta to add to the last lip (integer)
+        %   dy (integer): Y delta to add to the last lip (integer)
+        %
+        % Returns:
+        %   integer(1,4) or ``[]``: New lip or ``[]`` if we are at the boundary
+            f = self.evaluationFunction;
+            altitude = self.data.altitudes(j);
+            lip = self.data.paths{j}(:,end).';
+            x1 = lip(1); % we extract the last lip
+            y1 = lip(2);
+            x2 = lip(3);
+            y2 = lip(4);
+            % we find the other corners of the marching square, the sides of the squares are the segments:
+            % 1-3 3-4 2-4 (1-2 is the current side)
+            x3 = x1 + dx;
+            y3 = y1 + dy;
+            x4 = x2 + dx;
+            y4 = y2 + dy;
+            if ~all(self.data.validIntegerCoordinates([x3 x4], [y3 y4]))
+                newLip = [];
+                return
+            end
+            valid = 0; % number of valid lips
+            lip = [];
+            c1 = self.data.eval(f, x1, y1) >= altitude;
+            c2 = self.data.eval(f, x2, y2) >= altitude;
+            c3 = self.data.eval(f, x3, y3) >= altitude;
+            c4 = self.data.eval(f, x4, y4) >= altitude;
+            % side 1-3
+            if c1 ~= c3
+                valid = valid + 1;
+                lip = [x1 y1 x3 y3];
+            end
+            if c3 ~= c4
+                valid = valid + 1;
+                lip = [x3 y3 x4 y4];
+            end
+            if c2 ~= c4
+                valid = valid + 1;
+                lip = [x2 y2 x4 y4];
+            end
+            if valid > 1 % several solutions
+                warning('Ambiguous square, halving step size');
+                lip1 = self.splitLip(lip, self.data.altitudes(j));
+                self.data.paths{j}(:,end) = lip1;
+                dx1 = dx/2;
+                dy1 = dy/2;
+                assert(max(dx1, dy1) >= 1, 'Pathological boundary');
+                newLip = self.stepIsoline(j, dx1, dy1);
+            else % everything went well, add point
+                newLip = lip;
+                self.data.paths{j}(:,end+1) = lip;
+                self.plotIsoline(j);
+                drawnow;
+            end
         end
 
     end
@@ -129,8 +325,8 @@ classdef ImplicitMaker < handle
         %
         % Returns:
         %   integer: Power-of-two delta in integer coordinates
-            deltax = initialStepSize/abs(self.data.xRange(2) - self.data.xRange(1))*self.data.xDivisions;
-            deltay = initialStepSize/abs(self.data.yRange(2) - self.data.yRange(1))*self.data.yDivisions;
+            deltax = realDelta/abs(self.data.xRange(2) - self.data.xRange(1))*self.data.xDivisions;
+            deltay = realDelta/abs(self.data.yRange(2) - self.data.yRange(1))*self.data.yDivisions;
             delta = 2^floor(log2(min(deltax, deltay)));
             assert(delta >= 1, 'Delta too small, augment xDivisions and yDivisions');
         end
@@ -143,9 +339,9 @@ classdef ImplicitMaker < handle
         % Updates the plot of the given isoline
             if ~isempty(self.figure) && self.plotIsolines
                 [x, y] = self.data.isolinePath(self.evaluationFunction, j);
-                figure(self.figure);
                 h = self.figureIsolines{j};
                 if isempty(h)
+                    figure(self.figure);
                     h = plot(x, y, 'b-');
                     self.figureIsolines{j} = h;
                 else
@@ -159,17 +355,17 @@ classdef ImplicitMaker < handle
         % Creates a new isoline containing the given lip
         %
         % Args:
-        %   f (function_handle): 2D function to plot
         %   altitude (double): Altitude of the new isoline
         %   lip (integer(1,4)): Integer coordinates describing a linearly interpolated point
         %
         % Returns:
         %   j: Index of the new isoline
+            f = self.evaluationFunction;
             [isValid, reason] = self.data.isValidLip(f, altitude, lip);
             if ~isValid
                 error(['Invalid lip: ' reason]);
             end
-            j = length(self.data.altitudes + 1);
+            j = length(self.data.altitudes) + 1;
             self.data.altitudes(j) = altitude;
             self.data.paths{j} = lip(:);
             self.figureIsolines{j} = [];
@@ -252,7 +448,7 @@ classdef ImplicitMaker < handle
                 for j = 1:4
                     if ~isempty(below) && ~isempty(above)
                         delta = min(delta0, gcd(gcd(below(1), below(2)), gcd(above(1), above(2))));
-                        lip = self.lipFromArbitraryIntegerCoordinates(below, above, altitude, delta)
+                        lip = self.lipFromArbitraryIntegerCoordinates(below, above, altitude, delta);
                         return
                     end
                     x = pts(j, 1);
@@ -362,7 +558,7 @@ classdef ImplicitMaker < handle
             iy1 = lip(2);
             ix2 = lip(3);
             iy2 = lip(4);
-            delta = self.lipDelta(self, lip);
+            delta = max(abs(ix1 - ix2), abs(iy1 - iy2));
             assert(round(log2(delta)) == log2(delta), 'Delta must be a power-of-two');
             ix = (ix1 + ix2)/2;
             iy = (iy1 + iy2)/2;
@@ -379,202 +575,6 @@ classdef ImplicitMaker < handle
             end
             lip1 = [ix1 iy1 ix2 iy2];
         end
-
-    end
-
-% $$$
-% $$$         function splitLastLip(self, f)
-% $$$         % Splits the last lip in half
-% $$$         %
-% $$$         % This method is used to resolve ambiguous situations such as when the four corners have the signs::
-% $$$         %   +-  -+
-% $$$         %   -+  +-
-% $$$         %
-% $$$         % This method modifies the last lip in place.
-% $$$         %
-% $$$         % Args:
-% $$$         %   f (function_handle): Function ``f(x,y)`` to plot
-% $$$             ox = self.path(1, end);
-% $$$             oy = self.path(2, end);
-% $$$             ix = self.path(3, end);
-% $$$             iy = self.path(4, end);
-% $$$             ic = self.eval(f, ix, iy) >= 0;
-% $$$             oc = self.eval(f, ox, oy) >= 0;
-% $$$             if ix == ox % if it is vertical lip
-% $$$                 delta = oy - iy; % recover the step delta
-% $$$                 assert(abs(delta) > 1, 'Error: grid too small, increase yDivisions and recompute.');
-% $$$                 y = iy + delta/2;
-% $$$                 c = self.eval(f, ix, y) >= 0;
-% $$$                 if c == ic
-% $$$                     % the new point is inside
-% $$$                     iy = y;
-% $$$                 else
-% $$$                     % the new point is outside
-% $$$                     oy = y;
-% $$$                 end
-% $$$             else
-% $$$                 assert(iy == oy); % horizontal lip
-% $$$                 delta = ox - ix; % recover the step delta
-% $$$                 assert(abs(delta) > 1, 'Error: grid too small, increase yDivisions and recompute.');
-% $$$                 x = ix + delta/2;
-% $$$                 c = self.eval(f, x, iy) >= 0;
-% $$$                 if c == ic
-% $$$                     % the new point is inside
-% $$$                     ix = x;
-% $$$                 else
-% $$$                     % the new point is outside
-% $$$                     ox = x;
-% $$$                 end
-% $$$             end
-% $$$             self.path(:, end) = [ox;oy;ix;iy];
-% $$$         end
-% $$$
-% $$$         function step(self, f, dx, dy)
-% $$$         % Performs a step of the boundary discovery
-% $$$         %
-% $$$         % When calling this function, a marching square is described implicitly by the last lip, which provides a
-% $$$         % side of the square. The ``(dx, dy)`` argument is added to the two points of the lip, and describes the other
-% $$$         % two corners of the square.
-% $$$         %
-% $$$         % Adds a lip to `.path`
-% $$$         %
-% $$$         % Args:
-% $$$         %   f (function_handle): Function ``f(x,y)`` to plot
-% $$$         %   dx (integer): X delta to add to the last lip (integer)
-% $$$         %   dy (integer): Y delta to add to the last lip (integer)
-% $$$             ox = self.path(1, end); % we extract the last lip
-% $$$             oy = self.path(2, end);
-% $$$             ix = self.path(3, end);
-% $$$             iy = self.path(4, end);
-% $$$             % we find the other corners of the marching square, the sides of the squares are the segments:
-% $$$             % i-o (already in the path), o-a, i-b, a-b
-% $$$             ax = ox + dx;
-% $$$             ay = oy + dy;
-% $$$             bx = ix + dx;
-% $$$             by = iy + dy;
-% $$$             % we compute/retrieve the signs of the four corners
-% $$$             o = self.eval(f, ox, oy) >= 0;
-% $$$             i = self.eval(f, ix, iy) >= 0;
-% $$$             a = self.eval(f, ax, ay) >= 0;
-% $$$             b = self.eval(f, bx, by) >= 0;
-% $$$             % now we try all possible lips where the function has different signs
-% $$$             n = 0;
-% $$$             if o ~= a
-% $$$                 n = n + 1;
-% $$$                 ox1 = ox;
-% $$$                 oy1 = oy;
-% $$$                 ix1 = ax;
-% $$$                 iy1 = ay;
-% $$$             end
-% $$$             if i ~= b
-% $$$                 n = n + 1;
-% $$$                 ox1 = bx;
-% $$$                 oy1 = by;
-% $$$                 ix1 = ix;
-% $$$                 iy1 = iy;
-% $$$             end
-% $$$             if a ~= b
-% $$$                 n = n + 1;
-% $$$                 if a == o
-% $$$                     ox1 = ax;
-% $$$                     oy1 = ay;
-% $$$                     ix1 = bx;
-% $$$                     iy1 = by;
-% $$$                 else
-% $$$                     ox1 = bx;
-% $$$                     oy1 = by;
-% $$$                     ix1 = ax;
-% $$$                     iy1 = ay;
-% $$$                 end
-% $$$             end
-% $$$             if n > 1 % several solutions
-% $$$                 warning('Ambiguous square, halving step size');
-% $$$                 self.splitLastLip(f);
-% $$$                 self.step(f, dx/2, dy/2);
-% $$$             else % everything went well, add point
-% $$$                 self.path(:,end+1) = [ox1;oy1;ix1;iy1];
-% $$$             end
-% $$$         end
-% $$$
-% $$$         function closePath(self, f)
-% $$$         % Runs the marching squares algorithm
-% $$$         %
-% $$$         % This method assumes that `.initializePath` has already been called.
-% $$$         %
-% $$$         % It will find a path around the boundary to plot by applying the marching squares algorithm.
-% $$$         %
-% $$$         % Args:
-% $$$         %   f (function_handle): Function ``f(x,y)`` to plot
-% $$$             while any(self.path(:,1) ~= self.path(:,end))
-% $$$                 % perform one step
-% $$$                 ox = self.path(1, end);
-% $$$                 oy = self.path(2, end);
-% $$$                 ix = self.path(3, end);
-% $$$                 iy = self.path(4, end);
-% $$$                 if ix == ox % if it is vertical lip
-% $$$                     delta = abs(oy - iy); % recover the step delta
-% $$$                     prev1 = self.path(1, end-1);
-% $$$                     prev2 = self.path(3, end-1);
-% $$$                     % now we identify whether we came to the present lip from the left or the right
-% $$$                     if prev1 < ix || prev2 < ix
-% $$$                         % we came from the left, move to the right
-% $$$                         self.step(f, delta, 0);
-% $$$                     else
-% $$$                         % we came from the right, move to the left
-% $$$                         self.step(f, -delta, 0);
-% $$$                     end
-% $$$                 else
-% $$$                     assert(iy == oy); % horizontal lip
-% $$$                     delta = abs(ox - ix); % recover the step delta
-% $$$                     prev1 = self.path(2, end-1);
-% $$$                     prev2 = self.path(4, end-1);
-% $$$                     % now we identify whether we came to the present lip from above or below
-% $$$                     if prev1 < iy || prev2 < iy
-% $$$                         % we came from above, move below
-% $$$                         self.step(f, 0, delta);
-% $$$                     else
-% $$$                         % we came from below, move above
-% $$$                         self.step(f, 0, -delta);
-% $$$                     end
-% $$$                 end
-% $$$             end
-% $$$         end
-% $$$
-% $$$     end
-
-% $$$     methods % Plot retrieval
-% $$$
-% $$$
-% $$$         function plotCachedPoints(self)
-% $$$         % For debugging purposes, plots the points already computed and cached
-% $$$         %
-% $$$         % We plot the negative points in blue, and the nonnegative points in red
-% $$$             [ix, iy, c] = find(self.data);
-% $$$             [x, y] = self.realCoordinates(ix, iy);
-% $$$             mask = c >= 0;
-% $$$             plot(x(mask), y(mask), 'bx');
-% $$$             plot(x(~mask), y(~mask), 'rx');
-% $$$         end
-% $$$
-% $$$     end
-
-% $$$         function delta = lipDelta(self, lip)
-% $$$         % Returns the distance between the two points, given a lip parallel to either axis
-% $$$         %
-% $$$         % Args:
-% $$$         %   lip (integer(1,4)): Integer coordinates describing a linearly interpolated point
-% $$$         %
-% $$$         % Returns:
-% $$$         %   integer: Distance between the two points of the lip
-% $$$             if lip(1) == lip(3) % vertical lip
-% $$$                 delta = abs(lip(2) - lip(4));
-% $$$             elseif lip(2) == lip(4) % horizontal lip
-% $$$                 delta = abs(lip(1) - lip(3));
-% $$$             else
-% $$$                 error('Not a lip parallel to either the x or the y axis');
-% $$$             end
-% $$$         end
-% $$$
 
     end
 

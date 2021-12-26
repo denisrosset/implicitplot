@@ -6,19 +6,18 @@ v11 = P11 - P00;
 v10 = v11 - v01;
 Pxy = @(x,y) P00 + x*v10 + y*v01;
 
-% $$$ % compute the plot for the nonnegativity condition
-% $$$ fnonneg = @(x,y) minCoeff(Pxy(x,y));
-% $$$ Inonneg = oracleplot.Implicit.empty([-1.1 1.1], [-0.1 1.1], 'xDivisions', 2^16, 'yDivisions', 2^16);
-% $$$ Inonneg.initializePath(fnonneg, 0, 0.5, 0.05);
-% $$$ Inonneg.closePath(fnonneg);
+fig = figure;
+% compute the plot for the nonnegativity condition
+f_nonneg = @(x,y) minCoeff(Pxy(x,y));
+data_nonneg = oracleplot.Implicit.empty([-1.1 1.1], [-0.1 1.1], 'xDivisions', 2^16, 'yDivisions', 2^16);
+M_nonneg = oracleplot.ImplicitMaker(data_nonneg, f_nonneg, 'figure', fig, 'plotEvaluations', true, 'plotIsolines', true);
+M_nonneg.isoline(0, 'featureSize', 0.1);
 
 % compute the plot for the feasible region for the cut inflation
 f = @(x,y) slackCut(Pxy(x,y));
 data = oracleplot.Implicit.empty([-1.1 1.1], [-0.1 1.1], 'xDivisions', 2^16, 'yDivisions', 2^16);
-
-fig = figure;
 M = oracleplot.ImplicitMaker(data, f, 'figure', fig, 'plotEvaluations', true, 'plotIsolines', true);
-
+M.isoline(0, 'featureSize', 0.2);
 %I.initializePath(f, 0, 0.5, 0.05);
 %I.closePath(f);
 

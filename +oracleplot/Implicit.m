@@ -50,8 +50,10 @@ classdef Implicit < handle
 % * open: if the first and last points of the isoline are on the plot boundary but not identical
 % * wip: if the first and last points are not identical and at least one is not on the plot boundary
 %
-% Each isoline corresponds to an integer matrix with ``N`` rows and four columns, where ``N`` is the number of points.
-% Each row in this matrix stores four integers which together describe a linearly interpolated point.
+% Each isoline corresponds to an integer matrix with ``N`` columns and four rows, where ``N`` is the number of points.
+% Each column in this matrix stores four integers which together describe a linearly interpolated point.
+%
+% Note that the written format stores this matrix transposed.
 %
 % **Lips: linearly interpolated points**
 %
@@ -78,9 +80,9 @@ classdef Implicit < handle
         data % (sparse double matrix): Evaluated function values
     end
 
-    properties (SetAccess = protected)
+    properties
         altitudes % (double(1,I)): Altitudes of the isolines
-        paths % (cell(1,I) integer(Ni,4)): Path of the isolines
+        paths % (cell(1,I) integer(4,Ni)): Path of the isolines
     end
 
     methods (Static)
@@ -126,7 +128,8 @@ classdef Implicit < handle
         %   `.Implicit`: An implicit plot
             assert(s.version == 1);
             assert(strcmp(s.type, 'oracleplot.Implicit'));
-            ip = oracleplot.Implicit(s.xRange, s.yRange, s.data, s.xDivisions, s.yDivisions, s.altitudes, s.paths);
+            paths = cellfun(@(path) path.', s.paths, 'uniform', 0);
+            ip = oracleplot.Implicit(s.xRange, s.yRange, s.data, s.xDivisions, s.yDivisions, s.altitudes, paths);
         end
 
     end
@@ -147,10 +150,11 @@ classdef Implicit < handle
         %
         % Returns:
         %   struct: Struct containing the data from which this implicit plot can be reconstructed
+            paths = cellfun(@(path) path.', self.paths, 'uniform', 0);
             s = struct('version', {1}, 'type', {'oracleplot.Implicit'}, ...
                        'xRange', {self.xRange}, 'yRange', {self.yRange}, ...
                        'data', {self.data}, 'xDivisions', {self.xDivisions}, 'yDivisions', {self.yDivisions}, ...
-                       'altitudes', {self.altitudes}, 'paths', {self.paths});
+                       'altitudes', {self.altitudes}, 'paths', {paths});
         end
 
     end
@@ -271,6 +275,7 @@ classdef Implicit < handle
         %   logical(1,n): Whether each of the given coordinates is valid
             vx = (ix == round(ix)) & (ix >= 0) & (ix <= self.xDivisions);
             vy = (iy == round(iy)) & (iy >= 0) & (iy <= self.yDivisions);
+            l = vx & vy;
         end
 
         function l = integerCoordinatesOnBoundary(self, ix, iy)
@@ -362,29 +367,48 @@ classdef Implicit < handle
             reason = '';
         end
 
+        function l = isLipOnBorder(self, lip)
+        % Returns whether the given lip is on the plot border
+        %
+        % Args:
+        %   lip (integer(1,4)): Integer coordinates describing a linearly interpolated point
+        %
+        % Returns:
+        %   logical: Whether the lip is on the border
+            x1 = lip(1);
+            y1 = lip(2);
+            x2 = lip(3);
+            y2 = lip(4);
+            if x1 == x2 % vertical lip
+                l = (x1 == 0) || (x1 == self.xDivisions);
+            else
+                l = (y1 == 0) || (y1 == self.yDivisions);
+            end
+        end
+
     end
 
     methods % Isoline manipulation
 
-        function status = isolineStatus(self, f, j)
+
+        function status = isolineStatus(self, j)
         % Returns the status of the given isoline
         %
         % Args:
-        %   f (function_handle): 2D function to plot
         %   j (integer): Index of the isoline
         %
         % Returns:
         %   {'wip', 'open', 'closed'}: Isoline status
-            if size(self.paths{j}, 1) == 1
+            if size(self.paths{j}, 2) == 1
                 status = 'wip';
                 return
             end
-            first = self.paths{j}(1,:);
-            last = self.paths{j}(end,:);
+            first = self.paths{j}(:,1);
+            last = self.paths{j}(:,end);
             if all(first == last)
                 status = 'closed';
             else
-                if all(self.integerCoordinatesOnBoundary([first last]))
+                if self.isLipOnBorder(first) && self.isLipOnBorder(last)
                     status = 'open';
                 else
                     status = 'wip';
@@ -409,12 +433,12 @@ classdef Implicit < handle
         %    Y coordinates of the path to plot
             path = self.paths{j};
             altitude = self.altitudes(j);
-            n = size(path, 1);
+            n = size(path, 2);
             x = zeros(1, n);
             y = zeros(1, n);
             for i = 1:n
-                lip = path(i, :);
-                [xi, yi] = self.computeLipCoordinates(self, f, altitude, lip);
+                lip = path(:, i);
+                [xi, yi] = self.computeLipCoordinates(f, altitude, lip);
                 x(i) = xi;
                 y(i) = yi;
             end

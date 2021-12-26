@@ -28,6 +28,6 @@ function slack = slackCut(P)
             P_B1C1(:) == P_BC(:)
             P_A1B1C1(:) >= slack
             P_ABC(:) >= slack];
-    optimize(CONS, -slack);
+    optimize(CONS, -slack, sdpsettings('cachesolvers', 0));
     slack = double(slack);
 end
