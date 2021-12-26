@@ -1,4 +1,4 @@
-classdef ImplicitPlot < handle
+classdef Implicit < handle
 % Describes the 2D plot of an implicit equation f(x,y) == 0
 %
 % This class is optimized for implicit plots where the function evaluation is expensive. The computed function values
@@ -56,22 +56,20 @@ classdef ImplicitPlot < handle
 
     methods (Static)
 
-        function ip = empty(xRange, yRange, xDivisions, yDivisions)
+        function ip = empty(xRange, yRange, varargin)
         % Creates an empty implicit plot
         %
         % Args:
         %   xRange (double(1,2)): X axis range ``[xmin, xmax]``
         %   yRange (double(1,2)): Y axis range ``[ymin, ymax]``
+        %
+        % Keyword Args:
         %   xDivisions (integer): Number of divisions of the x axis, default 2^16
         %   yDivisions (integer): Number of divisions of the y axis, default 2^16
-            if nargin < 4
-                yDivisions = 2^16;
-            end
-            if nargin < 3
-                xDivisions = 2^16;
-            end
-            data = sparse(xDivisions+1, yDivisions+1);
-            ip = ImplicitPlot(xRange, yRange, data, xDivisions, yDivisions, zeros(4, 0));
+            args = struct('xDivisions', 2^16, 'yDivisions', 2^16);
+            args = oracleplot.populateStruct(args, varargin);
+            data = sparse(args.xDivisions+1, args.yDivisions+1);
+            ip = oracleplot.Implicit(xRange, yRange, data, args.xDivisions, args.yDivisions, zeros(4, 0));
         end
 
         function ip = load(filename)
@@ -81,9 +79,9 @@ classdef ImplicitPlot < handle
         %   filename (charstring): Name of the MAT file to read
         %
         % Returns:
-        %   `.ImplicitPlot`: An implicit plot
+        %   `.Implicit`: An implicit plot
             s = load(filename);
-            ip = ImplicitPlot.fromStruct(s);
+            ip = oracleplot.Implicit.fromStruct(s);
         end
 
         function ip = fromStruct(s)
@@ -91,9 +89,15 @@ classdef ImplicitPlot < handle
         %
         % This function is used for compatiblity with Octave, and to create MAT files that are interoperable with Python
         % and possibly other implementations of this plot.
+        %
+        % Args:
+        %   s (struct): Structure containing the data
+        %
+        % Returns:
+        %   `.Implicit`: An implicit plot
             assert(s.version == 1);
-            assert(strcmp(s.type, 'ImplicitPlot'));
-            ip = ImplicitPlot(s.xRange, s.yRange, s.data, s.xDivisions, s.yDivisions, s.path);
+            assert(strcmp(s.type, 'oracleplot.Implicit'));
+            ip = oracleplot.Implicit(s.xRange, s.yRange, s.data, s.xDivisions, s.yDivisions, s.path);
         end
 
     end
@@ -114,15 +118,16 @@ classdef ImplicitPlot < handle
         %
         % Returns:
         %   struct: Struct containing the data from which this implicit plot can be reconstructed
-            s = struct('version', {1}, 'type', {'ImplicitPlot'}, 'xRange', {self.xRange}, 'yRange', {self.yRange}, ...
+            s = struct('version', {1}, 'type', {'oracleplot.Implicit'}, ...
+                       'xRange', {self.xRange}, 'yRange', {self.yRange}, ...
                        'data', {self.data}, 'xDivisions', {self.xDivisions}, 'yDivisions', {self.yDivisions});
         end
 
     end
 
-    methods
+    methods % Constructor
 
-        function self = ImplicitPlot(xRange, yRange, data, xDivisions, yDivisions, path)
+        function self = Implicit(xRange, yRange, data, xDivisions, yDivisions, path)
         % Constructs an implicit plot object
         %
         % For the description of arguments, see the description of class properties
@@ -133,6 +138,10 @@ classdef ImplicitPlot < handle
             self.yDivisions = yDivisions;
             self.path = path;
         end
+
+    end
+
+    methods % Low-level functions
 
         function c = eval(self, f, ix, iy)
         % Evaluates the given function at the given grid point, with caching
@@ -202,6 +211,10 @@ classdef ImplicitPlot < handle
             y(iy == self.yDivisions) = yRange(2); % to avoid numerical errors
         end
 
+    end
+
+    methods % Path handling
+
         function initializePath(self, f, insideX, insideY, initialStepSize)
         % Initializes the plot by finding a pair of lips
         %
@@ -212,8 +225,8 @@ classdef ImplicitPlot < handle
         %
         % Args:
         %   f (function_handle): 2D function to plot
-        %   insideX (double): X coordinate of a point "inside"
-        %   insideY (double): Y coordinate of a point "inside"
+        %   insideX (double): X coordinate of a point "inside" (real)
+        %   insideY (double): Y coordinate of a point "inside" (real)
             deltax = initialStepSize/abs(self.xRange(2) - self.xRange(1))*self.xDivisions;
             deltay = initialStepSize/abs(self.yRange(2) - self.yRange(1))*self.yDivisions;
             delta = 2^floor(log2(min(deltax, deltay)));
@@ -244,6 +257,52 @@ classdef ImplicitPlot < handle
             self.step(f, delta, 0);
         end
 
+        function splitLastLip(self, f)
+        % Splits the last lip in half
+        %
+        % This method is used to resolve ambiguous situations such as when the four corners have the signs::
+        %   +-  -+
+        %   -+  +-
+        %
+        % This method modifies the last lip in place.
+        %
+        % Args:
+        %   f (function_handle): Function ``f(x,y)`` to plot
+            ox = self.path(1, end);
+            oy = self.path(2, end);
+            ix = self.path(3, end);
+            iy = self.path(4, end);
+            ic = self.eval(f, ix, iy) >= 0;
+            oc = self.eval(f, ox, oy) >= 0;
+            if ix == ox % if it is vertical lip
+                delta = oy - iy; % recover the step delta
+                assert(abs(delta) > 1, 'Error: grid too small, increase yDivisions and recompute.');
+                y = iy + delta/2;
+                c = self.eval(f, ix, y) >= 0;
+                if c == ic
+                    % the new point is inside
+                    iy = y;
+                else
+                    % the new point is outside
+                    oy = y;
+                end
+            else
+                assert(iy == oy); % horizontal lip
+                delta = ox - ix; % recover the step delta
+                assert(abs(delta) > 1, 'Error: grid too small, increase yDivisions and recompute.');
+                x = ix + delta/2;
+                c = self.eval(f, x, iy) >= 0;
+                if c == ic
+                    % the new point is inside
+                    ix = x;
+                else
+                    % the new point is outside
+                    ox = x;
+                end
+            end
+            self.path(:, end) = [ox;oy;ix;iy];
+        end
+
         function step(self, f, dx, dy)
         % Performs a step of the boundary discovery
         %
@@ -255,8 +314,8 @@ classdef ImplicitPlot < handle
         %
         % Args:
         %   f (function_handle): Function ``f(x,y)`` to plot
-        %   dx (double): X delta to add to the last lip
-        %   dy (double): Y delta to add to the last lip
+        %   dx (integer): X delta to add to the last lip (integer)
+        %   dy (integer): Y delta to add to the last lip (integer)
             ox = self.path(1, end); % we extract the last lip
             oy = self.path(2, end);
             ix = self.path(3, end);
@@ -273,24 +332,23 @@ classdef ImplicitPlot < handle
             a = self.eval(f, ax, ay) >= 0;
             b = self.eval(f, bx, by) >= 0;
             % now we try all possible lips where the function has different signs
-            done = false;
+            n = 0;
             if o ~= a
+                n = n + 1;
                 ox1 = ox;
                 oy1 = oy;
                 ix1 = ax;
                 iy1 = ay;
-                done = true;
             end
             if i ~= b
-                assert(~done);
+                n = n + 1;
                 ox1 = bx;
                 oy1 = by;
                 ix1 = ix;
                 iy1 = iy;
-                done = true;
             end
             if a ~= b
-                assert(~done);
+                n = n + 1;
                 if a == o
                     ox1 = ax;
                     oy1 = ay;
@@ -303,7 +361,13 @@ classdef ImplicitPlot < handle
                     iy1 = ay;
                 end
             end
-            self.path(:,end+1) = [ox1;oy1;ix1;iy1];
+            if n > 1 % several solutions
+                warning('Ambiguous square, halving step size');
+                self.splitLastLip(f);
+                self.step(f, dx/2, dy/2);
+            else % everything went well, add point
+                self.path(:,end+1) = [ox1;oy1;ix1;iy1];
+            end
         end
 
         function closePath(self, f)
@@ -312,6 +376,9 @@ classdef ImplicitPlot < handle
         % This method assumes that `.initializePath` has already been called.
         %
         % It will find a path around the boundary to plot by applying the marching squares algorithm.
+        %
+        % Args:
+        %   f (function_handle): Function ``f(x,y)`` to plot
             while any(self.path(:,1) ~= self.path(:,end))
                 % perform one step
                 ox = self.path(1, end);
@@ -346,6 +413,10 @@ classdef ImplicitPlot < handle
                 end
             end
         end
+
+    end
+
+    methods % Plot retrieval
 
         function [x, y] = computePath(self, f)
         % Retrieves the path to plot in real coordinates by performing linear interpolation

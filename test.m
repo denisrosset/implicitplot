@@ -1,5 +1,5 @@
 f = @(x,y) x^2+y^2-0.5;
-I = ImplicitPlot.empty([-1 1], [-1 1], 2^16, 2^16);
+I = oracleplot.Implicit.empty([-1 1], [-1 1], 'xDivisions', 2^16, 'yDivisions', 2^16);
 I.initializePath(f, 0, 0, 0.05);
 I.closePath(f);
 
