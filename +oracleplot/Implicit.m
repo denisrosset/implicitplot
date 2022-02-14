@@ -142,7 +142,7 @@ classdef Implicit < handle
         % Args:
         %   filename (charstring): Name of the MAT file to write
             s = self.toStruct;
-            save(filename, s);
+            save(filename, '-struct', s);
         end
 
         function s = toStruct(self)
